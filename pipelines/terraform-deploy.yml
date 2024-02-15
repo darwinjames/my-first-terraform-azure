@@ -32,6 +32,7 @@ resources:
 
 variables:  
   - template: ./variables.yml
+  
 
 stages:
 - stage: terraform_credentials_${{ variables.environment }}

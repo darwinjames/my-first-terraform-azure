@@ -6,6 +6,7 @@ variable "name" {
 variable "location" {
   description = "Resource Group Location"
   type = string  
+  default     = "Sweden Central"
 }
 
 variable "tags" {
