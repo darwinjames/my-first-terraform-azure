@@ -1,0 +1,13 @@
+variables:
+  terraformWorkingDirectory: './'
+  terraformVersion: '1.5.5'
+  environment: 'dev'
+  approvalEnvironment: 'dev'
+  backendServiceCon: 'Terraform Testing'
+  backendAzureRmSubscription: 'xxx-xxx-xxx-xxx-xxx'  # TODO
+  backendAzureRmResourceGroupName: 'terraform-rg'
+  backendAzureRmStorageAccountName: 'terraformstatesta'
+  backendAzureRmContainerName: 'tfstate'
+  backendAzureRmKey: 'test-deploy.tfstate'
+  terraformPlanOutput: 'tfplan'
+

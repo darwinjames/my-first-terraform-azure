@@ -1,0 +1,247 @@
+name: terraform_$(BuildDefinitionName)_$(date:yyyyMMdd)$(rev:.r)
+
+trigger: 
+  branches:
+    include: 
+    # - main
+    - feature/*
+  paths:
+    include:
+    # - terraform/*
+    # - pipelines/*
+    # - variables/*
+    - /*
+
+# pool: 
+#   name: selfhosted-aci
+
+pool: 
+  vmImage: ubuntu-latest
+
+parameters:
+- name: checkout
+  type: stepList
+  default: 
+    - checkout: self
+
+resources: 
+  repositories:
+  - repository: my-first-terraform-azure
+    name: my-first-terraform-azure
+    type: git    
+
+variables:  
+  - template: ./variables.yml
+
+stages:
+- stage: terraform_credentials_${{ variables.environment }}
+  displayName: Set Terraform authentication for  ${{ variables.environment }}
+  condition: and(not(failed()), not(canceled()))
+  jobs:
+  - job: Terraform_Credentials
+    displayName: Terraform Credentials
+    steps:
+    - ${{ parameters.checkout }}
+    - task: AzureCLI@2
+      displayName: 'Prepare Azure Credentials'
+      name: setCredentials
+      inputs:
+        addSpnToEnvironment: true
+        azureSubscription: ${{ variables.backendServiceCon }}
+        scriptLocation: 'inlineScript'
+        scriptType: 'bash'
+        inlineScript: |
+          set -euo pipefail
+          echo "##vso[task.setvariable variable=ARM_CLIENT_ID;isoutput=true;issecret=true]${servicePrincipalId}"
+          echo "##vso[task.setvariable variable=ARM_CLIENT_SECRET;isoutput=true;issecret=true]${servicePrincipalKey}"
+          echo "##vso[task.setvariable variable=ARM_SUBSCRIPTION_ID;isoutput=true;issecret=true]${{  variables.backendAzureRmSubscription }}"
+          echo "##vso[task.setvariable variable=ARM_TENANT_ID;isoutput=true;issecret=true]${tenantId}"
+
+- stage: terraform_validate_${{ variables.environment }}
+  variables:
+    ARM_CLIENT_ID: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_CLIENT_ID'] ]
+    ARM_CLIENT_SECRET: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_CLIENT_SECRET'] ]
+    ARM_SUBSCRIPTION_ID: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_SUBSCRIPTION_ID'] ]
+    ARM_TENANT_ID: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_TENANT_ID'] ]
+  displayName: Terraform Validate ${{ variables.environment }}
+  condition: and(not(failed()), not(canceled()))
+  dependsOn: 
+    - terraform_credentials_${{ variables.environment }}
+  jobs:
+  - job: ValidateTerraform
+    displayName: Terraform validate
+    steps:
+    - ${{ parameters.checkout }}
+
+    # Initialize Terraform backend
+    - task: Bash@3
+      displayName: 'Terraform init'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+      inputs:
+        workingDirectory: $(Build.Repository.Name)/${{ variables.terraformWorkingDirectory }}
+        targetType: 'inline'
+        script: |
+          set -euo pipefail
+          echo "-> Initialize Terraform"
+          terraform init -reconfigure \
+              -input=false \
+              -backend-config="subscription_id=${{ variables.backendAzureRmSubscription }}" \
+              -backend-config="resource_group_name=${{ variables.backendAzureRmResourceGroupName }}" \
+              -backend-config="storage_account_name=${{ variables.backendAzureRmStorageAccountName }}" \
+              -backend-config="container_name=${{ variables.backendAzureRmContainerName }}" \
+              -backend-config="key=${{ variables.backendAzureRmKey }}"
+          echo "-> Terraform init complete"
+
+    # Validate Terraform code
+    - task: Bash@3
+      displayName: 'Terraform validate'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+      inputs:
+        targetType: 'inline'
+        workingDirectory: $(Build.Repository.Name)/${{ variables.terraformWorkingDirectory }}
+        script: |
+          echo "-> Validate Terraform"
+          terraform validate
+          echo "-> Terraform validate complete"
+
+- stage: terraform_plan_${{ variables.environment }}
+  variables:
+    ARM_CLIENT_ID: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_CLIENT_ID'] ]
+    ARM_CLIENT_SECRET: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_CLIENT_SECRET'] ]
+    ARM_SUBSCRIPTION_ID: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_SUBSCRIPTION_ID'] ]
+    ARM_TENANT_ID: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_TENANT_ID'] ]
+  displayName: Terraform Plan ${{ variables.environment }}
+  dependsOn:
+    - terraform_credentials_${{ variables.environment }}
+    - terraform_validate_${{ variables.environment }}
+    
+  condition: and(not(failed()), not(canceled()))
+  jobs:
+  - job: PlanTerraform
+    displayName: 'Terraform Plan'
+    steps:
+    - ${{ parameters.checkout }}
+
+    # Initialize Terraform backend
+    - task: Bash@3
+      displayName: 'Terraform init'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+      inputs:
+        workingDirectory: $(Build.Repository.Name)/${{ variables.terraformWorkingDirectory }}
+        targetType: 'inline'
+        script: |
+          set -euo pipefail
+          echo "-> Initialize Terraform"
+          terraform init -reconfigure \
+              -input=false \
+              -backend-config="subscription_id=${{ variables.backendAzureRmSubscription }}" \
+              -backend-config="resource_group_name=${{ variables.backendAzureRmResourceGroupName }}" \
+              -backend-config="storage_account_name=${{ variables.backendAzureRmStorageAccountName }}" \
+              -backend-config="container_name=${{ variables.backendAzureRmContainerName }}" \
+              -backend-config="key=${{ variables.backendAzureRmKey }}"
+          echo "-> Terraform init complete"
+
+    # Run Terraform plan
+    - task: Bash@3
+      name: terraformPlan
+      displayName: 'Terraform plan'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET:  $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID:  $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID:  $(ARM_TENANT_ID)
+      inputs:
+        workingDirectory: $(Build.Repository.Name)/${{ variables.terraformWorkingDirectory }}
+        targetType: 'inline'
+        script: |
+          echo "-> Plan Terraform"
+          exit_status=0
+          terraform plan -out=$(Build.BuildId).${{ variables.environment }}.${{ variables.terraformPlanOutput }} -detailed-exitcode || exit_status=$?
+          echo "Exit statuscode: $exit_status "
+          if [ $exit_status -eq 2 ]; then 
+            echo '##vso[task.setvariable variable=changesPresent;isOutput=true]true'
+          fi
+          echo "-> Terraform plan complete"  
+    
+    # Create plan artifact 
+    - task: ArchiveFiles@2
+      inputs:
+        rootFolderOrFile: '$(Build.Repository.Name)/${{ variables.terraformWorkingDirectory }}'
+        includeRootFolder: false
+        archiveType: 'tar'
+        tarCompression: 'gz'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId).${{ variables.environment }}.tgz'
+        replaceExistingArchive: true
+        displayName: 'Create Plan Artifact'
+
+    # Publish plan artifact
+    - task: PublishBuildArtifacts@1
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: '$(Build.BuildId)-${{ variables.environment }}-${{ variables.terraformPlanOutput }}'
+        publishLocation: 'Container'
+        displayName: 'Publish Plan Artifact'   
+
+- stage: terraform_apply_${{ variables.environment }}
+  variables:
+    ARM_CLIENT_ID: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_CLIENT_ID'] ]
+    ARM_CLIENT_SECRET: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_CLIENT_SECRET'] ]
+    ARM_SUBSCRIPTION_ID: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_SUBSCRIPTION_ID'] ]
+    ARM_TENANT_ID: $[ stageDependencies.terraform_credentials_${{ variables.environment }}.Terraform_Credentials.outputs['setCredentials.ARM_TENANT_ID'] ]
+  displayName: Terraform Apply ${{ variables.environment }}
+  dependsOn: 
+    - terraform_credentials_${{ variables.environment }}
+    - terraform_validate_${{ variables.environment }}
+    - terraform_plan_${{ variables.environment }}
+  condition: and(not(failed()), not(canceled()))
+  jobs:
+  - job: ApplyTerraform
+    displayName: 'Terraform Apply'
+    steps:
+    - ${{ parameters.checkout }}
+    # Download artifact for Terraform plan
+    - task: DownloadBuildArtifacts@0
+      displayName: 'Download Plan Artifact'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+      inputs:
+        artifactName: '$(Build.BuildId)-${{ variables.environment }}-${{ variables.terraformPlanOutput }}'
+
+    # Extract Terraform plan artifact
+    - task: ExtractFiles@1
+      inputs:
+        archiveFilePatterns: '$(System.ArtifactsDirectory)/$(Build.BuildId)-${{ variables.environment }}-${{ variables.terraformPlanOutput }}/$(Build.BuildId).${{ variables.environment }}.tgz'
+        destinationFolder: '$(Build.Repository.Name)/${{ variables.terraformWorkingDirectory }}'
+        cleanDestinationFolder: true
+        displayName: 'Extract Terraform Plan Artifact'      
+
+    # Run Terraform apply
+    - task: Bash@3
+      displayName: 'Terraform apply'
+      env:
+        ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+        ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+        ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+        ARM_TENANT_ID: $(ARM_TENANT_ID)
+      inputs:
+        workingDirectory: $(Build.Repository.Name)/${{ variables.terraformWorkingDirectory }}
+        targetType: 'inline'
+        script: |
+          echo "-> Initialize Terraform"
+          terraform apply --auto-approve -input=false $(Build.BuildId).${{ variables.environment }}.${{ variables.terraformPlanOutput }}
+          echo "-> Terraform apply complete"
